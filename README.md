@@ -1,11 +1,11 @@
-# Supabase Importer
+# Supabase AC Importer
 
 This service receives AC maintenance payloads from Google Apps Script and imports
 them into Supabase using the service role key.
 
 ## Endpoints
 
-### POST /api/import
+### POST /import
 Imports:
 - locations
 - units
