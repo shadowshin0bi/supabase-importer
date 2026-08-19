@@ -1,12 +1,16 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
+import ws from "ws";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  {
+     realtime: { transport: ws }
+  }
 );
 
 app.post("/api/import", async (req, res) => {
