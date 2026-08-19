@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
-import ws from "ws";
-import { createClient } from "@supabase/supabase-js";
+import pg from "pg";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,18 +12,31 @@ app.use(cors());
 app.use(express.json());
 
 // -------------------------------------------------------------
-// Supabase API client (internal URL)
+// Postgres pool (internal Supabase DB)
 // -------------------------------------------------------------
-const supabase = createClient(
-  "http://supabase-kong-k0jiiioof5aaio7givw1ko7t.internal:8000",
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
-  {
-    realtime: { transport: ws }
+const pool = new pg.Pool({
+  user: "postgres",
+  host: "41a3d702e73b.internal",
+  database: "postgres",
+  password: process.env.POSTGRES_PASSWORD,
+  port: 5432,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000
+});
+
+async function dbQuery(sql, params) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(sql, params);
+    return result;
+  } finally {
+    client.release();
   }
-);
+}
 
 // -------------------------------------------------------------
-// IMPORT HANDLER
+// Import handler (Apps Script payload)
 // -------------------------------------------------------------
 async function importHandler(req, res) {
   try {
@@ -32,27 +44,25 @@ async function importHandler(req, res) {
       method: req.method,
       path: req.path,
       url: req.url,
-      headers: req.headers,
-      body: req.body
+      headers: req.headers
     });
+    console.log("Payload:", JSON.stringify(req.body, null, 2));
 
     const payload = req.body;
 
-    console.log("Payload received:", JSON.stringify(payload, null, 2));
+    // Store raw payload JSON in a table (example: ac_imports.raw_payload)
+    const result = await dbQuery(
+      `INSERT INTO ac_imports (raw_payload)
+       VALUES ($1)
+       RETURNING id, created_at`,
+      [JSON.stringify(payload)]
+    );
 
-    const { data, error } = await supabase
-      .from("ac_imports")
-      .insert(payload);
-
-    if (error) {
-      console.error("Supabase error:", error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    console.log("Supabase insert success:", data);
-
-    res.json({ status: "success", data });
-
+    res.json({
+      status: "success",
+      import_id: result.rows[0].id,
+      created_at: result.rows[0].created_at
+    });
   } catch (err) {
     console.error("IMPORT ERROR:", err);
     res.status(500).json({ error: err.message });
@@ -60,35 +70,77 @@ async function importHandler(req, res) {
 }
 
 // -------------------------------------------------------------
-// STATUS PAGE (GET) — works for both / and /api/import
+// Status / dashboard routes
 // -------------------------------------------------------------
+function dashboardJSON() {
+  return {
+    service: "Supabase Importer (Postgres direct)",
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    routes: {
+      root: "/",
+      import: "/api/import"
+    },
+    postgres: {
+      host: "41a3d702e73b.internal",
+      port: 5432,
+      user: "postgres",
+      database: "postgres",
+      password_env: !!process.env.POSTGRES_PASSWORD
+    },
+    environment: {
+      node_env: process.env.NODE_ENV || "development",
+      port: PORT
+    }
+  };
+}
+
 app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Supabase Importer is running",
-    timestamp: new Date().toISOString()
-  });
+  res.json(dashboardJSON());
 });
 
-// Traefik strips /api/import → Node receives "/"
-// But GET /api/import still works because we define it explicitly
 app.get("/api/import", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Supabase Importer is running (via /api/import)",
-    timestamp: new Date().toISOString()
-  });
+  res.json(dashboardJSON());
 });
 
 // -------------------------------------------------------------
-// IMPORT ROUTES (POST)
+// Health checks
+// -------------------------------------------------------------
+app.get("/health", (req, res) => {
+  res.json({ status: "healthy", timestamp: new Date().toISOString() });
+});
+
+app.get("/health/full", async (req, res) => {
+  const payload = {
+    status: "checking",
+    timestamp: new Date().toISOString(),
+    postgres: {
+      host: "41a3d702e73b.internal",
+      connected: false
+    }
+  };
+
+  try {
+    await dbQuery("SELECT 1", []);
+    payload.status = "healthy";
+    payload.postgres.connected = true;
+    res.json(payload);
+  } catch (err) {
+    payload.status = "down";
+    payload.postgres.error = err.message;
+    res.status(500).json(payload);
+  }
+});
+
+// -------------------------------------------------------------
+// Import routes (for Traefik + Apps Script)
 // -------------------------------------------------------------
 app.post("/", importHandler);
 app.post("/api/import", importHandler);
 
 // -------------------------------------------------------------
-// START SERVER
+// Start server
 // -------------------------------------------------------------
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Supabase Importer running on port ${PORT}`);
+  console.log(`Importer (Postgres direct) running on port ${PORT}`);
 });
