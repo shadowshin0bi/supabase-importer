@@ -12,14 +12,15 @@ app.use(cors());
 app.use(express.json());
 
 // -------------------------------------------------------------
-// Postgres pool (internal Supabase DB)
+// Postgres connection via DATABASE_URL
 // -------------------------------------------------------------
+if (!process.env.DATABASE_URL) {
+  console.error("ERROR: DATABASE_URL is not set");
+  process.exit(1);
+}
+
 const pool = new pg.Pool({
-  user: "postgres",
-  host: "41a3d702e73b.internal",
-  database: "postgres",
-  password: process.env.POSTGRES_PASSWORD,
-  port: 5432,
+  connectionString: process.env.DATABASE_URL,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000
@@ -28,8 +29,7 @@ const pool = new pg.Pool({
 async function dbQuery(sql, params) {
   const client = await pool.connect();
   try {
-    const result = await client.query(sql, params);
-    return result;
+    return await client.query(sql, params);
   } finally {
     client.release();
   }
@@ -43,14 +43,13 @@ async function importHandler(req, res) {
     console.log("Incoming request:", {
       method: req.method,
       path: req.path,
-      url: req.url,
-      headers: req.headers
+      url: req.url
     });
+
     console.log("Payload:", JSON.stringify(req.body, null, 2));
 
     const payload = req.body;
 
-    // Store raw payload JSON in a table (example: ac_imports.raw_payload)
     const result = await dbQuery(
       `INSERT INTO ac_imports (raw_payload)
        VALUES ($1)
@@ -70,37 +69,20 @@ async function importHandler(req, res) {
 }
 
 // -------------------------------------------------------------
-// Status / dashboard routes
+// Dashboard
 // -------------------------------------------------------------
-function dashboardJSON() {
-  return {
-    service: "Supabase Importer (Postgres direct)",
+app.get("/", (req, res) => {
+  res.json({
+    service: "Importer",
     status: "ok",
     timestamp: new Date().toISOString(),
+    database_url_present: !!process.env.DATABASE_URL,
     routes: {
-      root: "/",
-      import: "/api/import"
-    },
-    postgres: {
-      host: "41a3d702e73b.internal",
-      port: 5432,
-      user: "postgres",
-      database: "postgres",
-      password_env: !!process.env.POSTGRES_PASSWORD
-    },
-    environment: {
-      node_env: process.env.NODE_ENV || "development",
-      port: PORT
+      import: "/api/import",
+      health: "/health",
+      health_full: "/health/full"
     }
-  };
-}
-
-app.get("/", (req, res) => {
-  res.json(dashboardJSON());
-});
-
-app.get("/api/import", (req, res) => {
-  res.json(dashboardJSON());
+  });
 });
 
 // -------------------------------------------------------------
@@ -111,29 +93,27 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/health/full", async (req, res) => {
-  const payload = {
+  const result = {
     status: "checking",
     timestamp: new Date().toISOString(),
-    postgres: {
-      host: "41a3d702e73b.internal",
-      connected: false
-    }
+    database_url_present: !!process.env.DATABASE_URL,
+    postgres: { connected: false }
   };
 
   try {
     await dbQuery("SELECT 1", []);
-    payload.status = "healthy";
-    payload.postgres.connected = true;
-    res.json(payload);
+    result.status = "healthy";
+    result.postgres.connected = true;
+    res.json(result);
   } catch (err) {
-    payload.status = "down";
-    payload.postgres.error = err.message;
-    res.status(500).json(payload);
+    result.status = "down";
+    result.postgres.error = err.message;
+    res.status(500).json(result);
   }
 });
 
 // -------------------------------------------------------------
-// Import routes (for Traefik + Apps Script)
+// Import routes (Traefik + Apps Script)
 // -------------------------------------------------------------
 app.post("/", importHandler);
 app.post("/api/import", importHandler);
@@ -142,5 +122,5 @@ app.post("/api/import", importHandler);
 // Start server
 // -------------------------------------------------------------
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Importer (Postgres direct) running on port ${PORT}`);
+  console.log(`Importer running on port ${PORT}`);
 });
