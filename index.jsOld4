@@ -13,10 +13,10 @@ app.use(cors());
 app.use(express.json());
 
 // -------------------------------------------------------------
-// Supabase API client (internal URL)
+// Supabase client (with ws transport for Node 20)
 // -------------------------------------------------------------
 const supabase = createClient(
-  "http://supabase-kong-k0jiiioof5aaio7givw1ko7t.internal:8000",
+  process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
   {
     realtime: { transport: ws }
@@ -24,10 +24,13 @@ const supabase = createClient(
 );
 
 // -------------------------------------------------------------
-// IMPORT HANDLER
+// IMPORT HANDLER (shared logic)
 // -------------------------------------------------------------
 async function importHandler(req, res) {
   try {
+    // -------------------------------
+    // DEBUG: Incoming request details
+    // -------------------------------
     console.log("Incoming request:", {
       method: req.method,
       path: req.path,
@@ -38,12 +41,21 @@ async function importHandler(req, res) {
 
     const payload = req.body;
 
+    // -------------------------------
+    // DEBUG: Payload received
+    // -------------------------------
     console.log("Payload received:", JSON.stringify(payload, null, 2));
 
+    // -------------------------------
+    // Supabase insert
+    // -------------------------------
     const { data, error } = await supabase
       .from("ac_imports")
       .insert(payload);
 
+    // -------------------------------
+    // DEBUG: Supabase response
+    // -------------------------------
     if (error) {
       console.error("Supabase error:", error);
       return res.status(500).json({ error: error.message });
@@ -60,30 +72,13 @@ async function importHandler(req, res) {
 }
 
 // -------------------------------------------------------------
-// STATUS PAGE (GET) — works for both / and /api/import
+// ROUTES COMPATIBLE WITH TRAEFIK LABELS
 // -------------------------------------------------------------
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Supabase Importer is running",
-    timestamp: new Date().toISOString()
-  });
-});
 
 // Traefik strips /api/import → Node receives "/"
-// But GET /api/import still works because we define it explicitly
-app.get("/api/import", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Supabase Importer is running (via /api/import)",
-    timestamp: new Date().toISOString()
-  });
-});
-
-// -------------------------------------------------------------
-// IMPORT ROUTES (POST)
-// -------------------------------------------------------------
 app.post("/", importHandler);
+
+// If Traefik ever stops stripping prefixes, this still works:
 app.post("/api/import", importHandler);
 
 // -------------------------------------------------------------
